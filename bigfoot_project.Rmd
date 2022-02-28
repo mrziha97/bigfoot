@@ -1,0 +1,764 @@
+---
+title: "Bigfoot Testimony Analysis"
+author: "Michael Rziha"
+output:
+  html_document:
+    df_print: paged
+---
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo = TRUE)
+```
+
+
+
+```{r}
+
+library(rvest)
+
+library(magrittr)
+
+library(httr)
+
+library(stringr)
+
+library(dplyr)
+
+```
+First, I found the following website: http://penn.freeservers.com/bigfootmaps/ , which contains urls for different bigfoot testimonies. I scrapped the urls and then used then scraped the individual URLs to get the testimonies
+
+```{r eval=FALSE}
+a <- read_html("http://www.penn.freeservers.com/bigfootmaps/bfrocreature.txt") %>% 
+  html_text()
+
+#{URL=http://www.bfro.net/GDB/show_report.asp?id=13350}
+
+
+bfro <- str_extract_all(a, ("[{]([^}]+)[}]"))
+bfro <- bfro[[1]]
+bfro <- gsub(pattern = "\\{URL=", replacement = "", x = bfro)
+bfro <- gsub(pattern = "\\}", replacement = "", x = bfro)
+
+
+#these appear to be in a table
+
+text_list <- c()
+
+
+
+for (i in 1:length(bfro)) {
+
+if(i %% 15 == 0) {Sys.sleep(10)}
+bv <- tryCatch(read_html(bfro[i]) %>% 
+ # html_text()
+  html_table() %>% 
+  `[[`(4), error = function(e) {NA})
+
+bv <- as.character(bv)
+
+bv <- gsub(pattern = "\r\n", replacement = "", x = bv)
+bv <- gsub(pattern = "\\s+", replacement = " ", x = bv)
+bv <- gsub(pattern = "Explanation of the report classification system Submit a report for the sightings database Please send any comments or inquiries to ContactUs@BFRO.net", replacement = "", x = bv)
+bv <- gsub("([a-z])([A-Z])", "\\1 \\2", bv)
+bv <- gsub(pattern = "Geographical Index > United States > ", replacement = "", x = bv)
+bv <- gsub(pattern = "Report # ", replacement = "#", x = bv)
+bv <- gsub(pattern = "(Show Printer-friendly Version) ", replacement = "", x = bv)
+bv <- gsub(pattern = "(Show Printer-friendly Version)", replacement = "", x = bv)
+bv <- gsub(pattern = "YEAR: ", replacement = ",", x = bv)
+bv <- gsub(pattern = "SEASON: ", replacement = ",", x = bv)
+bv <- gsub(pattern = "STATE: ", replacement = ",", x = bv)
+bv <- gsub(pattern = "COUNTY: ", replacement = ",", x = bv)
+bv <- gsub(pattern = "MONTH: ", replacement = ",", x = bv)
+bv <- gsub(pattern = "DATE: ", replacement = ",", x = bv)
+bv <- gsub(pattern = "LOCATION DETAILS: ", replacement = ",", x = bv)
+bv <- gsub(pattern = "NEAREST TOWN ", replacement = ",", x = bv)
+bv <- gsub(pattern = "NEAREST TOWN: ", replacement = ",", x = bv)
+bv <- gsub(pattern = "NEAREST ROAD: ", replacement = ",", x = bv)
+bv <- gsub(pattern = "OBSERVED: ", replacement = "", x = bv)
+bv <- gsub(pattern = "bfro", replacement = "", x = bv)
+bv <- gsub(pattern = "BFRO", replacement = "", x = bv)
+bv <- gsub("About BFRO Investigator.*", "", bv)
+bv <- gsub(pattern = "Stan Courtney", replacement = "", x = bv)
+bv <- gsub(pattern = "John Green", replacement = "", x = bv)
+bv <- gsub(pattern = "Submit a report Submit a comment or article", replacement = "", x = bv)
+bv <- gsub(pattern = "ALSO NOTICED: ", replacement = "", x = bv)
+bv <- gsub(pattern = "OTHER STORIES:", replacement = "", x = bv)
+bv <- gsub(pattern = "OTHER WITNESSES: ", replacement = "", x = bv)
+bv <- gsub(pattern = "TIME AND CONDITIONS: ", replacement = "", x = bv)
+bv <- gsub(pattern = "ENVIRONMENT: ", replacement = "", x = bv)
+bv <- gsub("([a-z])([A-Z])", "\\1 \\2", bv)
+bv <- gsub("([a-z])([1-9])", "\\1 \\2", bv)
+print(i)
+
+text_list <- append(text_list, bv)
+
+}
+
+
+
+#save this file as an RDA
+#save(text_list, file = "bfro.rda")
+
+
+
+#text_list <- gsub(pattern = "bfro", replacement = "", x = text_list)
+
+#text_list  %>%
+ # grepl("John", .)%>%
+#  which(. == TRUE)
+
+#text_list[2602]
+
+
+
+```
+
+Here I load the file with the testimonies so I don't have to run the above code more than once. 
+```{r}
+load(file = "bfro.rda") 
+
+#pull out all the incorrect values
+sorry_report <- text_list  %>%
+  grepl("^Sorry--Report", .)%>%
+  which(. == TRUE)
+
+text_list <- text_list[-c(sorry_report)]
+
+#pull out the NAs
+na_list <- which(is.na(text_list))
+text_list <- text_list[-c(na_list)]
+
+
+```
+
+
+## Sentiment Analysis
+
+
+```{r}
+sentiment_list <- gsub(pattern = "\\.", replacement = ";", x = text_list)
+sentiment_list <- gsub(pattern = "\\?", replacement = ";", x = sentiment_list)
+sentiment_list <- gsub(pattern = "\\!", replacement = ";", x = sentiment_list)
+```
+
+
+With clean data, let's run the Sentiment Analysis on these calls first using the Hash Sentiment Jockers dictionary and then the Loughran and McDonald's one.
+
+```{r}
+library(sentimentr)
+library(lexicon)
+
+
+
+sentiment_list1 <- iconv(sentiment_list, "latin1", "UTF-8",sub='')
+
+#sentiment_list <- sentiment_list[-c(3136)]
+
+sent_hsj <- sentiment(tolower(sentiment_list1), polarity_dt = lexicon::hash_sentiment_jockers)
+
+sent_hslm <-sentiment(tolower(sentiment_list1), polarity_dt = lexicon::hash_sentiment_loughran_mcdonald)
+
+hist(sent_hsj$sentiment)
+hist(sent_hslm$sentiment)
+
+```
+
+Very neutral for the most part. Very few of them are overly positive or overly negative. 
+
+## Topic Models
+
+```{r}
+
+library(quanteda)
+library(stringr)
+library(stm)
+library(tm)
+
+#model_data <- combined_list
+model_data <- text_list
+
+model_data <- model_data %>% 
+  textclean::replace_contraction() %>% 
+  str_replace_all(., "\n", " ") %>% 
+  str_replace_all(., "(\\[.*?\\])", "") %>% 
+  str_squish() %>% 
+  gsub("([a-z])([A-Z])", "\\1 \\2", .) %>% 
+  tolower() %>% 
+  textstem::lemmatize_strings(.)
+
+
+model_data1 <- model_data
+
+Encoding(model_data1) <- "UTF-8"
+
+# creates the corpus with document variables except for the "text"
+text_corpus <- corpus(model_data1)
+
+smart_words <- tm::stopwords("SMART")
+
+text_token <- tokens(text_corpus, 
+                      remove_punct = TRUE, 
+                      remove_symbols = TRUE,
+                      remove_numbers = TRUE) %>%
+               tokens_remove(smart_words, padding = TRUE)
+
+text_dfm <- dfm(text_token)
+
+text_dfm <- dfm_trim(text_dfm, sparsity = 0.990)
+
+text_stm <- convert(text_dfm, to = "stm")
+
+docs_stm <- text_stm$documents 
+vocab_stm <- text_stm$vocab    
+meta_stm <- text_stm$meta
+
+textPrep <- prepDocuments(documents = docs_stm, 
+                           vocab = vocab_stm,
+                           meta = meta_stm)
+```
+
+
+```{r}
+kTest <- searchK(documents = textPrep$documents, 
+             vocab = textPrep$vocab, 
+             K = c(3, 4, 5, 10, 20), verbose = FALSE)
+
+plot(kTest)
+```
+
+
+Let's choose 5 topics, which balances both Semantic Coherence and Held Out Likelihood well. With our 5 topics, we can start our actual model:
+
+```{r}
+topics5 <- stm(documents = textPrep$documents, 
+             vocab = textPrep$vocab, seed = 1001,
+             K = 5, verbose = FALSE)
+```
+
+We can get a lot of output from our model, but we can focus on the expected topic proportions plot:
+
+```{r}
+plot(topics5)
+```
+
+We are essentially looking at the proportion of each topic, with a few of the highest probability words. 
+
+
+```{r}
+labelTopics(topics5)
+```
+
+Five decently distinct topics. Including horror movie stuff in topic 2 and driving in topic 4.
+
+Let's see which other words are most common.
+```{r}
+pun <- tm::removePunctuation(x = model_data1)
+
+freq_x <- sort(table(unlist(strsplit(pun, " "))),      # Create frequency table
+               decreasing = TRUE)
+head(freq_x,100) 
+
+freq_x <- data.frame(freq_x)
+
+freq_x$Var1 <- as.character(freq_x$Var1)
+
+stops <- paste("^",tm::stopwords("SMART"),"$", sep = "")
+
+
+stops <- paste(stops, collapse = '|')
+
+report <- freq_x$Var1  %>%
+  grepl(stops, .)%>%
+  which(. == TRUE)
+
+freq_y <- freq_x[-c(report),]
+
+head(freq_y,100) 
+
+
+
+
+
+```
+
+```{r}
+library(tidytext)
+library(stopwords)
+library(wordcloud2)
+library(RColorBrewer)
+
+pun <- data.frame(pun)
+
+pun %>%
+  dplyr::select(pun) %>%
+    mutate(pun = as.character(pun), 
+         pun = str_replace_all(pun, "\n", " "),   
+         pun = str_replace_all(pun, "(\\[.*?\\])", ""), 
+         pun = str_squish(pun), 
+         pun = gsub("([a-z])([A-Z])", "\\1 \\2", pun)) %>%
+  unnest_tokens(word, pun) %>% 
+  anti_join(stop_words) %>%
+  count(word, sort = TRUE) %>% 
+  filter(n > 100) %>% 
+  na.omit() %>% 
+  wordcloud2(shape = "cardioid")
+
+```
+
+Interesting that though the word "foot" appears quite a bit, the word "Big" or "Bigfoot" is nowhere to be seen. A lot of people just saw a "creature". 
+
+
+
+## States Data
+Find state names in the data and plot which states have the most occurences
+```{r}
+states <- tolower(state.name)
+
+states_from_list <- str_extract(text_list, paste(state.name, collapse='|'))
+
+state_frame <- data.frame(table(states_from_list))
+
+```
+
+
+```{r}
+
+library(ggplot2)
+
+state_data <- map_data("state")
+
+
+#need to drop Hawaii, which should be the 11th one
+center <- data.frame(state.name, state.center)
+center <- center[-c(11),]
+
+state_info <- cbind(state_frame, center)
+
+ggplot() +
+  geom_polygon(data=state_data, aes(x=long, y=lat, group = group),colour="grey10", fill="white" ) +
+  coord_map() +
+  geom_point(data=state_info, aes(x=x,y=y, color = Freq, size=Freq))
+
+```
+
+The size of the circle represents the number of bigfoot sightings per state. 
+
+
+
+Let's get some bear data and compare
+```{r}
+library(ggplot2)
+library(maps)
+  
+bear <- read_html("https://wildlifeinformer.com/black-bear-population-by-state/") %>% 
+ # html_text() 
+  html_table()  %>% 
+  `[[`(1)
+
+bear$`Black Bear Population` <- gsub(",", "", bear$`Black Bear Population`)
+bear$`Black Bear Population` <- gsub("none", "0", bear$`Black Bear Population`)
+bear$`Black Bear Population` <- gsub("Low/rare sightings", "0", bear$`Black Bear Population`)
+bear$`Black Bear Population` <- gsub("unknown/robust population", "10000", bear$`Black Bear Population`)
+bear$`Black Bear Population` <- gsub("5-10 \\(new population\\)", "8", bear$`Black Bear Population`)
+bear$`Black Bear Population` <- gsub("100-200", "150", bear$`Black Bear Population`)
+bear$`Black Bear Population` <- gsub("24000-36000", "30000", bear$`Black Bear Population`)
+bear$`Black Bear Population` <- gsub("540-840", "690", bear$`Black Bear Population`)
+bear$`Black Bear Population` <- gsub("5000-6000", "5500", bear$`Black Bear Population`)
+bear$`Black Bear Population` <- gsub("25000-30000", "27500", bear$`Black Bear Population`)
+bear$`Black Bear Population` <- gsub("30-40", "35", bear$`Black Bear Population`)
+bear$`Black Bear Population` <- gsub("24000-31000", "27500", bear$`Black Bear Population`)
+bear$`Black Bear Population` <- gsub("6000-8000", "7000", bear$`Black Bear Population`)
+bear$`Black Bear Population` <- gsub("4600-5700", "5300", bear$`Black Bear Population`)
+bear$`Black Bear Population` <- gsub("4000-5000", "4500", bear$`Black Bear Population`)
+bear$`Black Bear Population` <- gsub("15000-19000", "17000", bear$`Black Bear Population`)
+bear$`Black Bear Population` <- gsub("12000-15000", "13500", bear$`Black Bear Population`)
+bear$`Black Bear Population` <- gsub("10000-12000", "11000", bear$`Black Bear Population`)
+bear$`Black Bear Population` <- gsub("20000-30000", "25000", bear$`Black Bear Population`)
+bear$`Black Bear Population` <- gsub("500-750", "625", bear$`Black Bear Population`)
+bear$`Black Bear Population` <- gsub("100-150", "125", bear$`Black Bear Population`)
+bear$`Black Bear Population` <- gsub("300-500", "400", bear$`Black Bear Population`)
+bear$`Black Bear Population` <- gsub("50-100", "75", bear$`Black Bear Population`)
+bear$`Black Bear Population` <- gsub("12000-14000", "13000", bear$`Black Bear Population`)
+
+bear$bear_pop <- as.integer(bear$`Black Bear Population`)
+bear$region <- tolower(bear$`State Name`)
+
+states <- map_data("state")
+map.df <- merge(states,bear, by="region", all.x=T)
+map.df <- map.df[order(map.df$order),]
+ggplot(map.df, aes(x=long,y=lat,group=group))+
+  geom_polygon(aes(fill=bear_pop))+
+  geom_path()+ 
+  scale_fill_gradientn(colours=rev(heat.colors(20)),na.value="grey90")+
+  coord_map()
+
+
+
+
+  
+```
+
+Bear and bigfoot on the same graph
+```{r}
+ggplot() +
+  geom_polygon(data=map.df, aes(x=long, y=lat, group = group, fill=bear_pop)) +
+  geom_path() + 
+  scale_fill_gradientn(colours=rev(terrain.colors(20)),na.value="grey90") +
+  coord_map() +
+  geom_point(data=state_info, aes(x=x,y=y, size= Freq))
+```
+
+Not a ton of correlation for some states. Does not appear to be an excellent predictor.
+
+## Text Complexity
+
+Finally, let's analyze the text complexity of our data using quanteda.
+
+```{r}
+library(quanteda)
+library(quanteda.textstats)
+
+combine_data <- text_list
+Encoding(combine_data) <- "UTF-8"
+
+# creates the corpus with document variables except for the "text"
+combine_corpus <- corpus(combine_data)
+
+combine_tokens <- tokens(combine_corpus)
+dfmat_combine <- dfm(combine_tokens, remove = stopwords("en"))
+
+
+tstat_lexdiv <- textstat_lexdiv(dfmat_combine)
+tail(tstat_lexdiv, 5)
+
+plot(tstat_lexdiv$TTR)
+
+
+```
+
+Really is centered around the 0.7 or 70th percentile mark. These testimonies are more complex than average writing. Which is interesting considering the type of people who stereotypically are associated with bigfoot sightings.
+
+## Other Testimonies Pulled
+These are some additional testimonies pulled from the same website. However, each has much fewer reports and different writing styles that messed with the analytics.
+
+
+Bigfoot Encounters Website
+```{r eval=FALSE}
+
+b <- read_html("http://www.penn.freeservers.com/bigfootmaps/bfecreature.txt") %>% 
+  html_text()
+
+bfec <- str_extract_all(b, ("[{]([^}]+)[}]"))
+bfec <- bfec[[1]]
+bfec <- gsub(pattern = "\\{URL=", replacement = "", x = bfec)
+bfec <- gsub(pattern = "\\}", replacement = "", x = bfec)
+
+
+
+text_list_bfec <- c()
+
+
+
+for (i in 1:length(bfec)) {
+
+if(i %% 15 == 0) {Sys.sleep(10)}
+bf <- tryCatch(read_html(bfec[i]) %>% 
+ # html_text() 
+  html_table()  %>% 
+  `[[`(2), error = function(e) {NA})
+
+bf <- as.character(bf)
+bf <- gsub(pattern = "\r\n", replacement = "", x = bf)
+bf <- gsub(pattern = "\\s+", replacement = " ", x = bf)
+bf <- gsub(" REMOTE_HOST:", "", bf)
+bf <- gsub("([a-z])([A-Z])", "\\1 \\2", bf)
+bf <- gsub("([1-9])([A-Z])", "\\1 \\2", bf)
+bf <- gsub("([a-z])([1-9])", "\\1 \\2", bf)
+bf <- gsub(" REMOTE_ADDR:", "", bf)
+bf <- gsub(" REMOTE_USER:", "", bf)
+bf <- gsub(" Org Name:", "", bf)
+bf <- gsub(" Org ID:", "", bf)
+bf <- gsub('"', "'", bf)
+
+text_list_bfec <- append(text_list_bfec, bf)
+
+print(i)
+}
+
+
+save(text_list_bfec, file = "bfec.rda")
+
+load(file = "bfec.rda") 
+
+head(text_list_bfec, 10)
+
+#pull out the NAs
+na_list <- which(is.na(text_list_bfec))
+text_list_bfec <- text_list_bfec[-c(na_list)]
+
+
+
+```
+
+
+Scrape the Pennsylvania Bigfoot Society
+```{r eval=FALSE}
+
+#PaBigfoot Society
+
+c <- read_html("http://penn.freeservers.com/bigfootmaps/PBScreature.txt") %>% 
+  html_text()
+
+bpa <- str_extract_all(c, ("[{]([^}]+)[}]"))
+bpa <- bpa[[1]]
+bpa <- gsub(pattern = "\\{URL=", replacement = "", x = bpa)
+bpa <- gsub(pattern = "\\}", replacement = "", x = bpa)
+
+
+
+
+text_list_bpa <- c()
+
+
+
+for (i in 1:length(bpa)) {
+
+if(i %% 15 == 0) {Sys.sleep(10)}
+bp <- tryCatch(read_html(bpa[i]) %>% 
+ # html_text() 
+  html_table()  %>% 
+  `[[`(4), error = function(e) {NA})
+
+bp <- as.character(bp)
+bp <- gsub(pattern = "\\\\n", replacement = "", x = bp)
+bp <- gsub(pattern = "\\s+", replacement = " ", x = bp)
+bp <- gsub(pattern = "\\\\t", replacement = " ", x = bp)
+bp <- gsub("([a-z])([1-9])", "\\1 \\2", bp)
+bp <- gsub('"', "'", bp)
+bp <- gsub("\\c\\(", "", bp)
+bp <- gsub("\\)", "", bp)
+
+
+text_list_bpa <- append(text_list_bpa, bp)
+
+print(i)
+}
+
+
+save(text_list_bpa, file = "bpa.rda")
+
+
+load(file = "bpa.rda") 
+
+#tail(text_list_bpa, 10)
+
+
+#pull out the NAs
+na_list <- which(is.na(text_list_bpa))
+text_list_bpa <- text_list_bpa[-c(na_list)]
+
+
+
+```
+
+Ohio Sasquatch sightings - not working
+```{r eval=FALSE}
+
+d <- read_html("http://penn.freeservers.com/bigfootmaps/EOBICcreature.txt") %>% 
+  html_text()
+
+eoibc <- str_extract_all(d, ("[{]([^}]+)[}]"))
+
+eoibc <- eoibc[[1]]
+eoibc <- gsub(pattern = "\\{URL=", replacement = "", x = eoibc)
+eoibc <- gsub(pattern = "\\}", replacement = "", x = eoibc)
+
+
+
+
+text_list_eoibc <- c()
+
+
+
+for (i in 1:length(eoibc)) {
+
+if(i %% 15 == 0) {Sys.sleep(10)}
+bc <- tryCatch(read_html(eoibc[i]) %>% 
+  html_elements("b") %>% 
+  html_text() %>%
+  `[[`(1), error = function(e) {NA})
+
+bc <- as.character(bc)
+bc <- gsub(pattern = "\r\n", replacement = "", x = bc)
+bc <- gsub(pattern = "\\s+", replacement = " ", x = bc)
+bc <- gsub("([a-z])([A-Z])", "\\1 \\2", bc)
+
+
+
+text_list_eoibc <- append(text_list_eoibc, bc)
+
+print(i)
+}
+
+
+save(text_list_eoibc, file = "eoibc.rda")
+
+
+load(file = "eoibc.rda") 
+
+head(text_list_eoibc, 20)
+
+
+#pull out the NAs
+na_list <- which(is.na(text_list_eoibc))
+text_list_eoibc <- text_list_eoibc[-c(na_list)]
+
+
+
+
+
+
+```
+
+
+```{r eval=FALSE}
+#kentucky bigfoot society
+e <- read_html("http://www.penn.freeservers.com/bigfootmaps/kbfcreature.txt") %>% 
+  html_text()
+
+bks <- str_extract_all(e, ("[{]([^}]+)[}]"))
+bks <- bks[[1]]
+bks <- gsub(pattern = "\\{URL=", replacement = "", x = bks)
+bks <- gsub(pattern = "\\}", replacement = "", x = bks)
+
+
+
+text_list_bks <- c()
+
+
+
+for (i in 1:length(bks)) {
+
+if(i %% 15 == 0) {Sys.sleep(10)}
+bk <- tryCatch(read_html(bks[i]) %>% 
+  html_elements("p") %>% 
+  html_text(), error = function(e) {NA})
+
+bk <- as.character(bk)
+bk <- toString(bk)
+
+bk <- gsub(pattern = "\\\\n", replacement = "", x = bk)
+bk <- gsub(pattern = "\\s+", replacement = " ", x = bk)
+bk <- gsub('"', "'", bk)
+bk <- gsub("Your first name:", ",", bk)
+bk <- gsub("Which county?", ",", bk)
+bk <- gsub("Estimated date?", ",", bk)
+bk <- gsub("Estimated time?", ",", bk)
+bk <- gsub("Nearest city?", ",", bk)
+bk <- gsub("Nearest Road\\(s\\):", ",", bk)
+bk <- gsub("Length of time the encounter lasted:", ",", bk)
+bk <- gsub("How many witnesses?", ",", bk)
+bk <- gsub("Any additional Info?", ",", bk)
+bk <- gsub("Please describe your encounter:", ",", bk)
+bk <- gsub("What city, or nearest city :", ",", bk)
+bk <- gsub("--*--", "", bk)
+bk <- gsub("\\?", "", bk)
+bk <- gsub("Website submission", "", bk)
+bk <- gsub("Website Submission", "", bk)
+bk <- gsub(" 1\\. ", "", bk)
+bk <- gsub(" 2\\. ", "", bk)
+bk <- gsub(" 3\\. ", "", bk)
+bk <- gsub(" 4\\. ", "", bk)
+bk <- gsub(" 5\\. ", "", bk)
+bk <- gsub(" 6\\. ", "", bk)
+bk <- gsub(" 7\\. ", "", bk)
+bk <- gsub(" 8\\. ", "", bk)
+bk <- gsub("Submit Your Sighting.*", "", bk)
+bk <- gsub(pattern = "\\s+", replacement = " ", x = bk)
+
+
+
+text_list_bks <- append(text_list_bks, bk)
+
+print(i)
+}
+
+
+save(text_list_bks, file = "bks.rda")
+
+
+load(file = "bks.rda") 
+
+#head(text_list_bks, 20)
+
+
+#pull out the NAs
+na_list <- which(is.na(text_list_bks))
+#text_list_bks <- text_list_bks[-c(na_list)]
+
+```
+
+
+
+```{r eval=FALSE}
+#oregon big foot
+
+f <- read_html("http://penn.freeservers.com/bigfootmaps/obfcreature.txt") %>% 
+  html_text()
+
+obs <- str_extract_all(f, ("[{]([^}]+)[}]"))
+obs <- obs[[1]]
+obs <- gsub(pattern = "\\{URL=", replacement = "", x = obs)
+obs <- gsub(pattern = "\\}", replacement = "", x = obs)
+
+
+
+text_list_obs <- c()
+
+
+
+for (i in 1:length(obs)) {
+
+if(i %% 15 == 0) {Sys.sleep(10)}
+bs <- tryCatch(read_html(obs[i]) %>% 
+  html_elements("p") %>% 
+  html_text()  %>%
+  `[[`(22), error = function(e) {NA})
+
+bs <- as.character(bs)
+
+bs <- gsub(pattern = "\r\n", replacement = "", x = bs)
+bs <- gsub(pattern = "\\s+", replacement = " ", x = bs)
+bs <- gsub('"', "'", bs)
+bs <- gsub("Description of event: ", "", bs)
+
+
+
+text_list_obs <- append(text_list_obs, bs)
+
+print(i)
+}
+
+
+save(text_list_obs, file = "obs.rda")
+
+
+load(file = "obs.rda") 
+
+#head(text_list_obs, 20)
+
+
+#pull out the NAs
+na_list <- which(is.na(text_list_obs))
+#text_list_obs <- text_list_obs[-c(na_list)]
+
+```
+
+
+Combine all of the lists together
+
+```{r eval=FALSE}
+combined_list <- c(text_list, text_list_bfec, text_list_bks, text_list_bpa, text_list_obs)
+
+save(combined_list, file = "combined.rda")
+#load(file = "combined.rda") 
+```
